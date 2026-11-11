@@ -1,0 +1,14 @@
+# Secrets: never versioned
+.env
+*.env
+!*.env.example
+*.pem
+keys/
+
+# Tooling and OS
+.flyway/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

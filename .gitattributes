@@ -1,0 +1,3 @@
+# Shell scripts must keep LF line endings: with CRLF they fail inside a Linux container.
+*.sh  text eol=lf
+*.sql text eol=lf
