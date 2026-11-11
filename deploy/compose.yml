@@ -1,0 +1,34 @@
+# Migration runner of the customers domain (Annex J.7 and Annex G).
+#
+# This repository does NOT define a database: the single PostgreSQL instance and
+# its volume live in ftx-infra-postgres, which includes this file:
+#
+#   include:
+#     - path: ../ftx-customers-db/deploy/compose.yml
+#
+# Operation, from ftx-infra-postgres (the instance must be up first):
+#   docker compose --env-file env/dev.env up -d --wait postgres
+#   docker compose --env-file env/dev.env run --rm customers-db-migrate            # apply pending
+#   docker compose --env-file env/dev.env run --rm customers-db-migrate info       # what ran / what is pending
+#   docker compose --env-file env/dev.env run --rm customers-db-migrate validate   # nothing was edited
+services:
+  customers-db-migrate:
+    image: flyway/flyway:10.22.0            # pinned: the same binary in every environment
+    profiles: [tooling]                     # never starts with "up": migrating is a deliberate act
+    entrypoint: ["flyway", "-workingDirectory=/workspace", "-configFiles=flyway.toml"]
+    command: ["migrate"]                    # default action; pass another one to override it
+    volumes:
+      - ../:/workspace:ro                   # this repository, read only
+    environment:
+      # "postgres" is the service name of the single instance in the platform network.
+      FLYWAY_URL: jdbc:postgresql://postgres:5432/${PG_DATABASE:?set PG_DATABASE in the env file of ftx-infra-postgres}
+      FLYWAY_USER: ${PG_ADMIN_USER:?set PG_ADMIN_USER in the env file of ftx-infra-postgres}
+      FLYWAY_PASSWORD: ${PG_ADMIN_PASSWORD:?set PG_ADMIN_PASSWORD in the env file of ftx-infra-postgres}
+    networks: [platform]
+
+networks:
+  platform:
+    # One network per environment (PLATFORM_NETWORK in the env file of ftx-infra-postgres), so the
+    # names postgres and ftx-*-api never resolve to a container of another environment.
+    name: ${PLATFORM_NETWORK:-platform}
+    external: true

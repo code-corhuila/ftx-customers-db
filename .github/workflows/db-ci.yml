@@ -1,0 +1,72 @@
+# Rebuild check of the customers database (Annex A and Annex J.6).
+# Runs on every Pull Request to develop and qa, against an EMPTY PostgreSQL.
+name: db-ci
+
+on:
+  pull_request:
+    branches: [develop, qa]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ftx
+          POSTGRES_USER: ci_admin
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}  # changes on every run; never a fixed credential
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci_admin -d ftx"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGDATABASE: ftx
+      PGUSER: ci_admin
+      PGPASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull the pinned Flyway image
+        run: docker pull flyway/flyway:10.22.0
+
+      - name: Simulate ftx-infra-postgres (creates customers_app, as its init script does)
+        run: psql -v ON_ERROR_STOP=1 -c "CREATE ROLE customers_app LOGIN PASSWORD '$(openssl rand -hex 16)'"
+
+      - name: Rebuild check (migrate, re-run, rollback, migrate again)
+        env:
+          FLYWAY: >-
+            docker run --rm --network host -v ${{ github.workspace }}:/workspace:ro
+            flyway/flyway:10.22.0 -workingDirectory=/workspace -configFiles=flyway.toml
+            -url=jdbc:postgresql://localhost:5432/ftx -user=ci_admin -password=ci-${{ github.run_id }}-${{ github.run_attempt }}
+          PSQL: psql
+        run: sh tests/rebuild.sh
+
+      - name: Annex J.10 - customers_app writes only in its own schema
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "
+          SELECT r.rolname AS usuario, n.nspname AS esquema,
+                 bool_or(has_table_privilege(r.rolname, c.oid, 'SELECT')) AS lee,
+                 bool_or(has_table_privilege(r.rolname, c.oid, 'INSERT')
+                      OR has_table_privilege(r.rolname, c.oid, 'UPDATE')
+                      OR has_table_privilege(r.rolname, c.oid, 'DELETE')) AS escribe
+          FROM pg_roles r
+          JOIN pg_class c ON c.relkind = 'r'
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE r.rolname LIKE '%\_app'
+            AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+            AND has_schema_privilege(r.rolname, n.nspname, 'USAGE')
+          GROUP BY 1, 2
+          HAVING bool_or(has_table_privilege(r.rolname, c.oid, 'SELECT'))
+          ORDER BY 1, 2;"
